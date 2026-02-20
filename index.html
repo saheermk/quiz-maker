@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="ml">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PSC Video Creator HD</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Malayalam:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Noto Sans Malayalam', sans-serif; background-color: #ffffff; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 10px; }
+        .editor-box { width: 100%; max-width: 800px; background: #f1f5f9; padding: 20px; border-radius: 20px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); }
+        #data-input { width: 100%; height: 300px; font-family: monospace; font-size: 13px; padding: 12px; border-radius: 10px; border: 1px solid #cbd5e1; white-space: pre; background: #ffffff; }
+        #preview-wrap { width: 300px; aspect-ratio: 9/16; background: white; border: 6px solid #2563eb; border-radius: 16px; overflow: hidden; display: none; position: relative; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); }
+        canvas { width: 100%; height: 100%; object-fit: contain; }
+        .rec-dot { width: 10px; height: 10px; background: red; border-radius: 50%; animation: blink 1s infinite; }
+        @keyframes blink { 50% { opacity: 0; } }
+    </style>
+</head>
+<body>
+
+    <!-- Setup UI -->
+    <div id="setup-ui" class="editor-box">
+        <h1 class="text-2xl font-bold mb-4 text-slate-800">PSC Video Maker HD</h1>
+        <p class="text-sm text-slate-500 mb-3">താഴെ നൽകിയിരിക്കുന്ന `quizData` മാറ്റം വരുത്തുക:</p>
+        
+        <textarea id="data-input" spellcheck="false">const quizData = [
+    {
+        q: "'ഒരു ജാതി ഒരു മതം ഒരു ദൈവം മനുഷ്യന്' എന്ന് പ്രഖ്യാപിച്ചത് ആര്?",
+        options: ["ശ്രീനാരായണ ഗുരു", "അയ്യങ്കാളി", "ചട്ടപ്പി സ്വാമികൾ", "വാഗ്ഭടാനന്ദൻ"],
+        correct: 0
+    },
+    {
+        q: "കേരളത്തിലെ ഏറ്റവും നീളം കൂടിയ നദി ഏതാണ്?",
+        options: ["ഭാരതപ്പുഴ", "പെരിയാർ", "പമ്പ", "ചാലിയാർ"],
+        correct: 1
+    },
+    {
+        q: "വില്ലുവണ്ടി സമരം നയിച്ചത് ആര്?",
+        options: ["കുമാരനാശാൻ", "മന്നത്ത് പത്മനാഭൻ", "അയ്യങ്കാളി", "കെ. കേളപ്പൻ"],
+        correct: 2
+    },
+    {
+        q: "വിവരാവകാശ നിയമം (RTI) നിലവിൽ വന്ന വർഷം ഏത്?",
+        options: ["2002", "2008", "2004", "2005"],
+        correct: 3
+    }
+];</textarea>
+
+        <div class="mt-4 flex flex-col md:flex-row gap-4 items-center">
+            <div class="flex-1">
+                <label class="text-xs font-bold text-slate-400">SAVE AS</label>
+                <select id="format-select" class="w-full p-2 border rounded-lg bg-white">
+                    <option value="mp4">MP4 (Best for Social Media)</option>
+                    <option value="webm">WebM (High Quality)</option>
+                </select>
+            </div>
+            <button onclick="startProcess()" class="bg-blue-600 text-white px-10 py-3 rounded-xl font-bold hover:bg-blue-700 transition shadow-lg w-full md:w-auto">
+                Generate Video
+            </button>
+        </div>
+    </div>
+
+    <!-- Recording UI -->
+    <div id="recording-ui" class="hidden text-center">
+        <div id="preview-wrap">
+            <div class="absolute top-3 left-3 flex items-center gap-2 bg-black/50 text-white px-2 py-1 rounded-full text-[10px] font-bold">
+                <div class="rec-dot"></div> REC 1080p
+            </div>
+            <canvas id="renderCanvas" width="1080" height="1920"></canvas>
+        </div>
+        <div id="status-text" class="mt-6 font-bold text-blue-600 text-lg">വീഡിയോ തയ്യാറാക്കുന്നു...</div>
+        <p class="text-slate-400 text-xs mt-2">റെക്കോർഡിംഗ് സമയത്ത് സ്ക്രീൻ ഓഫ് ആകില്ല.</p>
+    </div>
+
+    <script>
+        let quizData = [];
+        let audioCtx, streamDest, mediaRecorder, tickBuffer, wakeLock = null;
+        let recordedChunks = [];
+        const canvas = document.getElementById('renderCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Trick 1: Screen Wake Lock (Keep screen on)
+        async function stayAwake() {
+            if ('wakeLock' in navigator) {
+                try { wakeLock = await navigator.wakeLock.request('screen'); } catch (err) {}
+            }
+        }
+
+        // Trick 2: Stable Audio Engine
+        async function setupAudio() {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            if (audioCtx.state === 'suspended') await audioCtx.resume();
+            
+            streamDest = audioCtx.createMediaStreamDestination();
+            
+            // Create clear 'Tick' sound
+            const sr = audioCtx.sampleRate;
+            tickBuffer = audioCtx.createBuffer(1, sr * 0.1, sr);
+            const d = tickBuffer.getChannelData(0);
+            for (let i = 0; i < d.length; i++) {
+                const t = i / sr;
+                d[i] = Math.sin(2 * Math.PI * 1000 * t) * Math.exp(-50 * t);
+            }
+
+            // Continuous silent oscillator to keep the recording timeline stable
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            gain.gain.value = 0.00001; 
+            osc.connect(gain); gain.connect(streamDest);
+            osc.start();
+        }
+
+        function playTik() {
+            const source = audioCtx.createBufferSource();
+            source.buffer = tickBuffer;
+            const g = audioCtx.createGain();
+            g.gain.value = 0.6;
+            source.connect(g); g.connect(streamDest); g.connect(audioCtx.destination);
+            source.start(audioCtx.currentTime);
+        }
+
+        async function startProcess() {
+            const input = document.getElementById('data-input').value;
+            try {
+                const rawData = input.replace('const quizData =', '').trim().replace(/;$/, '');
+                quizData = eval(rawData);
+            } catch (e) { return alert("Data format error! Check your code."); }
+
+            document.getElementById('setup-ui').classList.add('hidden');
+            document.getElementById('recording-ui').classList.remove('hidden');
+            document.getElementById('preview-wrap').style.display = 'block';
+
+            await stayAwake();
+            await setupAudio();
+
+            // Setup Recording
+            const videoStream = canvas.captureStream(30);
+            const combined = new MediaStream([...videoStream.getVideoTracks(), ...streamDest.stream.getAudioTracks()]);
+            
+            // Trick 3: Force best available codec
+            const mimeType = MediaRecorder.isTypeSupported('video/mp4;codecs=h264') ? 'video/mp4;codecs=h264' : 'video/webm;codecs=vp9';
+            
+            mediaRecorder = new MediaRecorder(combined, { mimeType, videoBitsPerSecond: 8000000 });
+            mediaRecorder.ondataavailable = e => recordedChunks.push(e.data);
+            mediaRecorder.onstop = saveFinalFile;
+            mediaRecorder.start(100);
+
+            runAnimation();
+        }
+
+        async function runAnimation() {
+            for (let i = 0; i < quizData.length; i++) {
+                const item = quizData[i];
+                
+                // Typing Question
+                for (let c = 0; c <= item.q.length; c++) {
+                    draw(item.q.substring(0, c), [], -1, null, i+1);
+                    await new Promise(r => setTimeout(r, 40));
+                }
+                await new Promise(r => setTimeout(r, 1500));
+
+                // Show Options
+                draw(item.q, item.options, -1, null, i+1);
+                await new Promise(r => setTimeout(r, 1000));
+
+                // Countdown
+                for (let count = 3; count > 0; count--) {
+                    playTik();
+                    draw(item.q, item.options, -1, count, i+1);
+                    await new Promise(r => setTimeout(r, 1000));
+                }
+
+                // Highlight Correct
+                draw(item.q, item.options, item.correct, null, i+1);
+                await new Promise(r => setTimeout(r, 2500));
+            }
+            mediaRecorder.stop();
+        }
+
+        function draw(q, opts, correctIdx, countdown, qCount) {
+            ctx.fillStyle = "white"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Header
+            ctx.fillStyle = "#94a3b8"; ctx.font = "bold 40px 'Noto Sans Malayalam'"; ctx.textAlign = "center";
+            ctx.fillText(`PSC QUIZ • QUESTION ${qCount}/${quizData.length}`, canvas.width / 2, 130);
+            
+            // Question
+            ctx.fillStyle = "#1e293b"; ctx.font = "bold 65px 'Noto Sans Malayalam'"; ctx.textBaseline = "middle";
+            wrap(q, canvas.width / 2, 450, 900, 90);
+            
+            // Options
+            opts.forEach((opt, idx) => {
+                const y = 950 + (idx * 190);
+                const isCorrect = idx === correctIdx;
+                ctx.lineWidth = 5; ctx.strokeStyle = isCorrect ? "#10b981" : "#f1f5f9"; ctx.fillStyle = isCorrect ? "#10b981" : "#f8fafc";
+                box(100, y - 85, 880, 170, 35, true, true);
+                ctx.fillStyle = isCorrect ? "white" : "#475569"; ctx.font = "50px 'Noto Sans Malayalam'";
+                ctx.fillText(opt, canvas.width / 2, y);
+            });
+
+            // Countdown
+            if (countdown !== null) { ctx.fillStyle = "#ef4444"; ctx.font = "bold 350px Arial"; ctx.fillText(countdown, canvas.width / 2, 1780); }
+        }
+
+        function wrap(text, x, y, maxW, lineH) {
+            const words = text.split(' '); let line = ''; let cy = y;
+            for(let n=0; n<words.length; n++) {
+                let test = line + words[n] + ' ';
+                if (ctx.measureText(test).width > maxW && n > 0) { ctx.fillText(line, x, cy); line = words[n] + ' '; cy += lineH; } else { line = test; }
+            }
+            ctx.fillText(line, x, cy);
+        }
+
+        function box(x,y,w,h,r,f,s) {
+            ctx.beginPath(); ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+            ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+            ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+            ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath();
+            if(f) ctx.fill(); if(s) ctx.stroke();
+        }
+
+        async function saveFinalFile() {
+            const format = document.getElementById('format-select').value;
+            // Trick 4: Force rename even if it's WebM blob
+            const mime = format === 'mp4' ? 'video/mp4' : 'video/webm';
+            const blob = new Blob(recordedChunks, { type: mime });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `Quiz_Video.${format}`;
+            a.click();
+            
+            document.getElementById('status-text').innerHTML = "ഡൗൺലോഡ് പൂർത്തിയായി! ✅";
+            if (wakeLock) await wakeLock.release();
+        }
+    </script>
+</body>
+</html>
+
