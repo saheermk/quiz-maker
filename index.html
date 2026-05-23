@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PSC Video Engine - HD Capture</title>
+    <title>Quiz Maker | PSC Practice</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Malayalam:wght@400;700&display=swap" rel="stylesheet">
     <style>
@@ -59,27 +59,34 @@
     <div id="ui-render" class="hidden text-center">
         <div class="preview-wrapper mx-auto">
             <div class="rec-label">
-                <span class="w-2 h-2 bg-white rounded-full"></span> HD RENDERING
+                <span class="w-2 h-2 bg-white rounded-full"></span> GENERATING
             </div>
             <canvas id="offscreenCanvas" width="1080" height="1920"></canvas>
         </div>
-        <div id="status-msg" class="mt-8 text-xl font-bold text-blue-600">Initialising Encoder...</div>
-        <p class="text-slate-400 text-xs mt-2">Do not switch tabs or lock your device. Screen is locked to ON.</p>
+        <div id="status-msg" class="mt-8 text-xl font-bold text-blue-600">Preparing quiz video...</div>
+        <p class="text-slate-400 text-xs mt-2">Please keep this tab active while the video is being generated.</p>
     </div>
 
     <script>
         let quizData = [];
         let audioCtx, streamDest, mediaRecorder, tickBuffer, wakeLock = null;
         let recordedChunks = [];
+        let cancelled = false;
         const canvas = document.getElementById('offscreenCanvas');
         const ctx = canvas.getContext('2d', { alpha: false });
 
-        // Keep Screen Active
+        // Keep Screen Active — re-acquire on visibility change (browser releases it when tab is hidden)
         async function lockScreen() {
             if ('wakeLock' in navigator) {
                 try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
             }
         }
+
+        document.addEventListener('visibilitychange', async () => {
+            if (document.visibilityState === 'visible' && mediaRecorder && mediaRecorder.state === 'recording') {
+                await lockScreen();
+            }
+        });
 
         // Professional Audio Path
         async function initAudioEngine() {
@@ -116,6 +123,89 @@
             src.start(audioCtx.currentTime);
         }
 
+        function triggerKeyClick() {
+    const sr = audioCtx.sampleRate;
+    const now = audioCtx.currentTime;
+
+    // --- Layer 1: Thock body (low-mid punch) ---
+    const thockFrames = Math.floor(sr * 0.06);
+    const thockBuf = audioCtx.createBuffer(1, thockFrames, sr);
+    const thockData = thockBuf.getChannelData(0);
+    for (let i = 0; i < thockFrames; i++) {
+        thockData[i] = (Math.random() * 2 - 1) * Math.exp(-i / (sr * 0.012));
+    }
+    const thockSrc = audioCtx.createBufferSource();
+    thockSrc.buffer = thockBuf;
+
+    const thockBP = audioCtx.createBiquadFilter();
+    thockBP.type = 'bandpass';
+    thockBP.frequency.value = 420;   // The "body" of the keypress
+    thockBP.Q.value = 1.2;
+
+    const thockGain = audioCtx.createGain();
+    thockGain.gain.setValueAtTime(0.35, now);
+    thockGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.055);
+
+    thockSrc.connect(thockBP);
+    thockBP.connect(thockGain);
+    thockGain.connect(audioCtx.destination);
+
+    // --- Layer 2: Tick (high plastic snap) ---
+    const tickFrames = Math.floor(sr * 0.018);
+    const tickBuf = audioCtx.createBuffer(1, tickFrames, sr);
+    const tickData = tickBuf.getChannelData(0);
+    for (let i = 0; i < tickFrames; i++) {
+        tickData[i] = (Math.random() * 2 - 1) * Math.exp(-i / (sr * 0.004));
+    }
+    const tickSrc = audioCtx.createBufferSource();
+    tickSrc.buffer = tickBuf;
+
+    const tickHP = audioCtx.createBiquadFilter();
+    tickHP.type = 'highpass';
+    tickHP.frequency.value = 3500;   // Crisp plastic snap frequency
+
+    const tickGain = audioCtx.createGain();
+    tickGain.gain.setValueAtTime(0.22, now);
+    tickGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.015);
+
+    tickSrc.connect(tickHP);
+    tickHP.connect(tickGain);
+    tickGain.connect(audioCtx.destination);
+
+    // --- Layer 3: Subtle key-up "clack" echo (4ms later) ---
+    const clackFrames = Math.floor(sr * 0.012);
+    const clackBuf = audioCtx.createBuffer(1, clackFrames, sr);
+    const clackData = clackBuf.getChannelData(0);
+    for (let i = 0; i < clackFrames; i++) {
+        clackData[i] = (Math.random() * 2 - 1) * Math.exp(-i / (sr * 0.003));
+    }
+    const clackSrc = audioCtx.createBufferSource();
+    clackSrc.buffer = clackBuf;
+
+    const clackBP = audioCtx.createBiquadFilter();
+    clackBP.type = 'bandpass';
+    clackBP.frequency.value = 900;
+    clackBP.Q.value = 2.0;
+
+    const clackGain = audioCtx.createGain();
+    clackGain.gain.setValueAtTime(0.09, now + 0.004);  // slight delay = key rebound
+    clackGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.018);
+
+    clackSrc.connect(clackBP);
+    clackBP.connect(clackGain);
+    clackGain.connect(audioCtx.destination);
+
+    // Fire all layers
+    thockSrc.start(now);
+    tickSrc.start(now);
+    clackSrc.start(now + 0.004);  // clack hits slightly after
+
+    // Route to streamDest so it gets recorded in the video export
+    thockGain.connect(streamDest);
+    tickGain.connect(streamDest);
+    clackGain.connect(streamDest);
+}
+
         async function startEngine() {
             const raw = document.getElementById('data-editor').value;
             try {
@@ -145,8 +235,10 @@
             mediaRecorder.ondataavailable = e => { if (e.data.size > 0) recordedChunks.push(e.data); };
             mediaRecorder.onstop = finalizeExport;
             
+            cancelled = false;
+            recordedChunks = [];
             mediaRecorder.start(100);
-            statusMsg("Encoding Frames...");
+            statusMsg('Encoding Frames...');
             startQuizProcess();
         }
 
@@ -154,31 +246,38 @@
 
         async function startQuizProcess() {
             for (let i = 0; i < quizData.length; i++) {
+                if (cancelled) return;
                 const item = quizData[i];
-                
+
                 // 1. Typing Question
                 for (let c = 0; c <= item.q.length; c++) {
+                    if (cancelled) return;
                     render(item.q.substring(0, c), [], -1, null, i+1);
+                    if (c > 0) triggerKeyClick();
                     await wait(50);
                 }
+                if (cancelled) return;
                 await wait(1500);
 
                 // 2. Show Options
+                if (cancelled) return;
                 render(item.q, item.options, -1, null, i+1);
                 await wait(1000);
 
                 // 3. Countdown Loop
                 for (let count = 3; count > 0; count--) {
+                    if (cancelled) return;
                     triggerTick();
                     render(item.q, item.options, -1, count, i+1);
                     await wait(1000);
                 }
 
                 // 4. Highlight Answer
+                if (cancelled) return;
                 render(item.q, item.options, item.correct, null, i+1);
                 await wait(2500);
             }
-            mediaRecorder.stop();
+            if (!cancelled) mediaRecorder.stop();
         }
 
         function render(q, opts, ansIdx, timer, num) {
@@ -258,10 +357,23 @@
             link.download = `Quiz_HD_${Date.now()}.${ext}`;
             link.click();
             
-            statusMsg("Download Complete! ✅");
+            statusMsg(cancelled ? 'Generation cancelled. Partial video saved.' : 'Download complete. Video saved.');
             if (wakeLock) wakeLock.release();
         }
     </script>
+
+    <!-- Footer -->
+    <footer style="width:100%; margin-top:auto; padding:1.5rem 1rem; text-align:center; border-top:1px solid #e2e8f0; background:#f8fafc;">
+        <p style="margin:0; font-size:13px; color:#94a3b8; font-family:'Noto Sans Malayalam',sans-serif;">
+            Built for PSC aspirants &nbsp;·&nbsp;
+            <a href="https://github.com/saheermk/quiz-maker" target="_blank" rel="noopener noreferrer"
+               style="color:#3b82f6; text-decoration:none; font-weight:600;">
+                GitHub
+            </a>
+            &nbsp;·&nbsp; &copy; <span id="footer-year"></span> Quiz Maker
+        </p>
+    </footer>
+    <script>document.getElementById('footer-year').textContent = new Date().getFullYear();</script>
 </body>
 </html>
 
