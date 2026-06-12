@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Quiz Maker | PSC Practice</title>
+    <link rel="icon" href="favicon.ico" type="image/x-icon">
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Malayalam:wght@400;700&display=swap" rel="stylesheet">
     <style>
@@ -46,7 +47,7 @@
             <div class="flex-1">
                 <label class="block text-[10px] font-bold text-slate-400 uppercase mb-1">Target Quality</label>
                 <div class="flex items-center p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-semibold text-slate-700">
-                    1080p (Full HD) • 30 FPS • MP4 Container
+                    1080p (Full HD) • 30 FPS • WebM Container
                 </div>
             </div>
             <button onclick="startEngine()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold px-8 py-4 rounded-xl shadow-xl shadow-blue-200 transition-all flex items-center justify-center gap-2">
@@ -225,10 +226,10 @@
             const tracks = [...videoStream.getVideoTracks(), ...streamDest.stream.getAudioTracks()];
             const mergedStream = new MediaStream(tracks);
 
-            // Using MP4 container if available, otherwise VP9
-            let options = { mimeType: 'video/mp4;codecs=avc1', videoBitsPerSecond: 8000000 };
+            // Force WebM container output
+            let options = { mimeType: 'video/webm;codecs=vp9', videoBitsPerSecond: 8000000 };
             if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-                options = { mimeType: 'video/webm;codecs=vp9', videoBitsPerSecond: 8000000 };
+                options = { mimeType: 'video/webm', videoBitsPerSecond: 8000000 };
             }
 
             mediaRecorder = new MediaRecorder(mergedStream, options);
@@ -350,7 +351,7 @@
             const mime = mediaRecorder.mimeType;
             const blob = new Blob(recordedChunks, { type: mime });
             const url = URL.createObjectURL(blob);
-            const ext = mime.includes('mp4') ? 'mp4' : 'webm';
+            const ext = 'webm';
             
             const link = document.createElement('a');
             link.href = url;
