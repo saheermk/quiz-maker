@@ -45,12 +45,19 @@
 
         <div class="mt-6 flex flex-col sm:flex-row gap-4">
             <div class="flex-1">
+                <label class="block text-[10px] font-bold text-slate-400 uppercase mb-1">Video Format</label>
+                <select id="video-format" class="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-semibold text-slate-700 outline-none focus:border-blue-500 transition-colors">
+                    <option value="reel">Reel / Shorts (9:16)</option>
+                    <option value="video">Standard Video (16:9)</option>
+                </select>
+            </div>
+            <div class="flex-1 hidden md:block">
                 <label class="block text-[10px] font-bold text-slate-400 uppercase mb-1">Target Quality</label>
                 <div class="flex items-center p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-semibold text-slate-700">
-                    1080p (Full HD) • 30 FPS • WebM Container
+                    1080p • 30 FPS • WebM
                 </div>
             </div>
-            <button onclick="startEngine()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold px-8 py-4 rounded-xl shadow-xl shadow-blue-200 transition-all flex items-center justify-center gap-2">
+            <button onclick="startEngine()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold px-8 py-4 rounded-xl shadow-xl shadow-blue-200 transition-all flex items-center justify-center gap-2 sm:w-auto w-full">
                 Generate Video
             </button>
         </div>
@@ -216,7 +223,24 @@
 
             document.getElementById('ui-setup').classList.add('hidden');
             document.getElementById('ui-render').classList.remove('hidden');
-            document.getElementById('ui-render').querySelector('.preview-wrapper').style.display = 'block';
+            
+            const previewWrapper = document.getElementById('ui-render').querySelector('.preview-wrapper');
+            previewWrapper.style.display = 'block';
+            
+            const format = document.getElementById('video-format').value;
+            if (format === 'video') {
+                canvas.width = 1920;
+                canvas.height = 1080;
+                previewWrapper.style.aspectRatio = '16/9';
+                previewWrapper.style.width = '500px';
+                previewWrapper.style.maxWidth = '90vw';
+            } else {
+                canvas.width = 1080;
+                canvas.height = 1920;
+                previewWrapper.style.aspectRatio = '9/16';
+                previewWrapper.style.width = '300px';
+                previewWrapper.style.maxWidth = '90vw';
+            }
 
             await lockScreen();
             await initAudioEngine();
@@ -282,43 +306,67 @@
         }
 
         function render(q, opts, ansIdx, timer, num) {
+            const isVideo = canvas.width > canvas.height;
+            
             // White Background
             ctx.fillStyle = "white";
             ctx.fillRect(0, 0, canvas.width, canvas.height);
 
             // Progress Text
             ctx.fillStyle = "#94a3b8";
-            ctx.font = "bold 40px 'Noto Sans Malayalam'";
+            ctx.font = isVideo ? "bold 32px 'Noto Sans Malayalam'" : "bold 40px 'Noto Sans Malayalam'";
             ctx.textAlign = "center";
-            ctx.fillText(`QUESTION ${num} / ${quizData.length}`, canvas.width / 2, 140);
+            ctx.fillText(`QUESTION ${num} / ${quizData.length}`, canvas.width / 2, isVideo ? 100 : 140);
 
             // Question Text (Centered Wrap)
             ctx.fillStyle = "#0f172a";
-            ctx.font = "bold 68px 'Noto Sans Malayalam'";
+            ctx.font = isVideo ? "bold 64px 'Noto Sans Malayalam'" : "bold 68px 'Noto Sans Malayalam'";
             ctx.textBaseline = "middle";
-            drawWrappedText(q, canvas.width / 2, 450, 920, 100);
+            drawWrappedText(q, canvas.width / 2, isVideo ? 280 : 450, isVideo ? 1500 : 920, isVideo ? 90 : 100);
 
             // Option Boxes
             opts.forEach((text, idx) => {
-                const y = 1000 + (idx * 190);
+                let yBox, xBox, w, h, textX, textY, fontSize;
+                
+                if (isVideo) {
+                    w = 700; h = 140;
+                    const isCol2 = idx % 2 === 1;
+                    const isRow2 = idx >= 2;
+                    xBox = isCol2 ? 1010 : 210;
+                    yBox = isRow2 ? 700 : 500;
+                    textX = xBox + w / 2;
+                    textY = yBox + h / 2;
+                    fontSize = "44px";
+                } else {
+                    w = 880; h = 170; xBox = 100;
+                    yBox = 1000 + (idx * 190) - 85;
+                    textX = canvas.width / 2;
+                    textY = yBox + h / 2;
+                    fontSize = "52px";
+                }
+                
                 const isActive = idx === ansIdx;
                 
                 ctx.lineWidth = 6;
                 ctx.strokeStyle = isActive ? "#10b981" : "#f1f5f9";
                 ctx.fillStyle = isActive ? "#10b981" : "#f8fafc";
                 
-                roundRect(100, y - 85, 880, 170, 30, true, true);
+                roundRect(xBox, yBox, w, h, isVideo ? 20 : 30, true, true);
                 
                 ctx.fillStyle = isActive ? "white" : "#334155";
-                ctx.font = "52px 'Noto Sans Malayalam'";
-                ctx.fillText(text, canvas.width / 2, y);
+                ctx.font = `${fontSize} 'Noto Sans Malayalam'`;
+                ctx.fillText(text, textX, textY);
             });
 
             // Countdown Timer
             if (timer !== null) {
                 ctx.fillStyle = "#ef4444";
-                ctx.font = "bold 350px Arial";
-                ctx.fillText(timer, canvas.width / 2, 1800);
+                ctx.font = isVideo ? "bold 150px Arial" : "bold 350px Arial";
+                if (isVideo) {
+                    ctx.fillText(timer, 1750, 150);
+                } else {
+                    ctx.fillText(timer, canvas.width / 2, 1800);
+                }
             }
         }
 
