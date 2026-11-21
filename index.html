@@ -157,6 +157,7 @@
         correct: 2
     }
 ];</textarea>
+        <p id="syntax-error" class="hidden mt-2 text-xs font-bold text-red-600">Syntax Error in quizData!</p>
 
         <div class="mt-6">
             <label class="block text-[10px] font-bold text-slate-400 uppercase mb-2">Theme</label>
@@ -309,7 +310,7 @@
         }
 
         let quizData = [];
-        let audioCtx, streamDest, mediaRecorder, tickBuffer, wakeLock = null;
+        let audioCtx, streamDest, mediaRecorder, tickBuffer, thockBuf, tickClickBuf, clackBuf, wakeLock = null;
         let recordedChunks = [];
         let cancelled = false;
         const canvas = document.getElementById('offscreenCanvas');
@@ -344,6 +345,20 @@
                 data[i] = Math.sin(2 * Math.PI * 1100 * t) * Math.exp(-60 * t);
             }
 
+            // Pre-build mechanical key-click buffers once so keystrokes fire with zero allocation lag
+            const buildNoiseBuf = (dur, decay) => {
+                const frames = Math.floor(sr * dur);
+                const buf = audioCtx.createBuffer(1, frames, sr);
+                const ch = buf.getChannelData(0);
+                for (let i = 0; i < frames; i++) {
+                    ch[i] = (Math.random() * 2 - 1) * Math.exp(-i / (sr * decay));
+                }
+                return buf;
+            };
+            thockBuf = buildNoiseBuf(0.06, 0.012);
+            tickClickBuf = buildNoiseBuf(0.018, 0.004);
+            clackBuf = buildNoiseBuf(0.012, 0.003);
+
             // Silent hum to prevent the stream from clipping or sleeping
             const noise = audioCtx.createGain();
             noise.gain.value = 0.00001;
@@ -363,23 +378,66 @@
             src.start(audioCtx.currentTime);
         }
 
+        function triggerOptionsPop() {
+            const baseFreqs = [420, 490, 560, 640];
+            baseFreqs.forEach((f, idx) => {
+                const t = audioCtx.currentTime + idx * 0.09;
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(f * 0.75, t);
+                osc.frequency.exponentialRampToValueAtTime(f * 1.25, t + 0.055);
+                gain.gain.setValueAtTime(0.0001, t);
+                gain.gain.linearRampToValueAtTime(0.24, t + 0.01);
+                gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.095);
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                gain.connect(streamDest);
+                osc.start(t);
+                osc.stop(t + 0.1);
+            });
+        }
+
+        function triggerRightAnswer() {
+            const notes = [
+                { f: 880, delay: 0, dur: 0.14 },     // A5
+                { f: 1318.51, delay: 0.07, dur: 0.4 } // E6
+            ];
+            notes.forEach(n => {
+                const t = audioCtx.currentTime + n.delay;
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = 'square';
+                osc.frequency.setValueAtTime(n.f, t);
+
+                const lp = audioCtx.createBiquadFilter();
+                lp.type = 'lowpass';
+                lp.frequency.setValueAtTime(4200, t);
+                lp.frequency.exponentialRampToValueAtTime(1200, t + n.dur);
+
+                gain.gain.setValueAtTime(0.0001, t);
+                gain.gain.linearRampToValueAtTime(0.14, t + 0.005);
+                gain.gain.exponentialRampToValueAtTime(0.0001, t + n.dur);
+
+                osc.connect(lp);
+                lp.connect(gain);
+                gain.connect(audioCtx.destination);
+                gain.connect(streamDest);
+                osc.start(t);
+                osc.stop(t + n.dur + 0.02);
+            });
+        }
+
         function triggerKeyClick() {
-            const sr = audioCtx.sampleRate;
             const now = audioCtx.currentTime;
 
             // --- Layer 1: Thock body (low-mid punch) ---
-            const thockFrames = Math.floor(sr * 0.06);
-            const thockBuf = audioCtx.createBuffer(1, thockFrames, sr);
-            const thockData = thockBuf.getChannelData(0);
-            for (let i = 0; i < thockFrames; i++) {
-                thockData[i] = (Math.random() * 2 - 1) * Math.exp(-i / (sr * 0.012));
-            }
             const thockSrc = audioCtx.createBufferSource();
             thockSrc.buffer = thockBuf;
 
             const thockBP = audioCtx.createBiquadFilter();
             thockBP.type = 'bandpass';
-            thockBP.frequency.value = 420;   // The "body" of the keypress
+            thockBP.frequency.value = 420;
             thockBP.Q.value = 1.2;
 
             const thockGain = audioCtx.createGain();
@@ -391,18 +449,12 @@
             thockGain.connect(audioCtx.destination);
 
             // --- Layer 2: Tick (high plastic snap) ---
-            const tickFrames = Math.floor(sr * 0.018);
-            const tickBuf = audioCtx.createBuffer(1, tickFrames, sr);
-            const tickData = tickBuf.getChannelData(0);
-            for (let i = 0; i < tickFrames; i++) {
-                tickData[i] = (Math.random() * 2 - 1) * Math.exp(-i / (sr * 0.004));
-            }
             const tickSrc = audioCtx.createBufferSource();
-            tickSrc.buffer = tickBuf;
+            tickSrc.buffer = tickClickBuf;
 
             const tickHP = audioCtx.createBiquadFilter();
             tickHP.type = 'highpass';
-            tickHP.frequency.value = 3500;   // Crisp plastic snap frequency
+            tickHP.frequency.value = 3500;
 
             const tickGain = audioCtx.createGain();
             tickGain.gain.setValueAtTime(0.22, now);
@@ -413,12 +465,6 @@
             tickGain.connect(audioCtx.destination);
 
             // --- Layer 3: Subtle key-up "clack" echo (4ms later) ---
-            const clackFrames = Math.floor(sr * 0.012);
-            const clackBuf = audioCtx.createBuffer(1, clackFrames, sr);
-            const clackData = clackBuf.getChannelData(0);
-            for (let i = 0; i < clackFrames; i++) {
-                clackData[i] = (Math.random() * 2 - 1) * Math.exp(-i / (sr * 0.003));
-            }
             const clackSrc = audioCtx.createBufferSource();
             clackSrc.buffer = clackBuf;
 
@@ -428,7 +474,7 @@
             clackBP.Q.value = 2.0;
 
             const clackGain = audioCtx.createGain();
-            clackGain.gain.setValueAtTime(0.09, now + 0.004);  // slight delay = key rebound
+            clackGain.gain.setValueAtTime(0.09, now + 0.004);
             clackGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.018);
 
             clackSrc.connect(clackBP);
@@ -438,7 +484,7 @@
             // Fire all layers
             thockSrc.start(now);
             tickSrc.start(now);
-            clackSrc.start(now + 0.004);  // clack hits slightly after
+            clackSrc.start(now + 0.004);
 
             // Route to streamDest so it gets recorded in the video export
             thockGain.connect(streamDest);
@@ -448,10 +494,15 @@
 
         async function startEngine() {
             const raw = document.getElementById('data-editor').value;
+            const errEl = document.getElementById('syntax-error');
             try {
                 const evalData = raw.replace('const quizData =', '').trim().replace(/;$/, '');
                 quizData = eval(evalData);
-            } catch (e) { return alert("Syntax Error in quizData!"); }
+                errEl.classList.add('hidden');
+            } catch (e) {
+                errEl.classList.remove('hidden');
+                return;
+            }
 
             document.getElementById('ui-setup').classList.add('hidden');
             document.getElementById('ui-render').classList.remove('hidden');
@@ -478,8 +529,8 @@
             prefs.format = document.getElementById('video-format').value;
             pushRecent(); savePrefs();
             currentTheme = buildTheme(prefs);
+            buildBgCache(canvas.width, canvas.height, currentTheme);
             lastArgs = null; barShown = 0; lastDrawAt = performance.now(); optsShownAt = 0;
-            startTicker();
 
             await lockScreen();
             await initAudioEngine();
@@ -502,6 +553,7 @@
             cancelled = false;
             recordedChunks = [];
             mediaRecorder.start(100);
+            startTicker();
             statusMsg('Encoding Frames...');
             startQuizProcess();
         }
@@ -513,7 +565,7 @@
                 if (cancelled) return;
                 const item = quizData[i];
 
-                // 1. Typing Question
+                // 1. Typing Question (exact legacy 50ms timing)
                 for (let c = 0; c <= item.q.length; c++) {
                     if (cancelled) return;
                     render(item.q.substring(0, c), [], -1, null, i + 1);
@@ -526,6 +578,7 @@
                 // 2. Show Options
                 if (cancelled) return;
                 render(item.q, item.options, -1, null, i + 1);
+                triggerOptionsPop();
                 await wait(1000);
 
                 // 3. Countdown Loop
@@ -539,6 +592,7 @@
                 // 4. Highlight Answer
                 if (cancelled) return;
                 render(item.q, item.options, item.correct, null, i + 1);
+                triggerRightAnswer();
                 await wait(2500);
             }
             if (!cancelled) mediaRecorder.stop();
@@ -632,10 +686,9 @@
             const e = themeEntry(), k = entryKey(e);
             prefs.recent = [e].concat((prefs.recent || []).filter(r => entryKey(r) !== k)).slice(0, 5);
         }
+
         // ---------- AUTO CONTRAST FOR THE FALLING "?" ----------
-        // Marks are decorative, so they are kept far below text contrast (4.5:1). Their opacity is
-        // solved automatically per background so every theme gets the same gentle, visible contrast.
-        const MARK_CONTRAST = 1.25;   // same visibility as the Blue theme, where marks read clearly
+        const MARK_CONTRAST = 1.25;
         function relLum(hex) {
             const f = c => { c /= 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
             const [r, g, b] = hexRgb(hex);
@@ -647,7 +700,7 @@
         }
         function autoMarkAlpha(bg, fg) {
             let lo = 0.03, hi = 0.5;
-            if (contrastRatio(mixHex(bg, fg, hi), bg) < MARK_CONTRAST) return hi;   // low-contrast pair: use max
+            if (contrastRatio(mixHex(bg, fg, hi), bg) < MARK_CONTRAST) return hi;
             for (let i = 0; i < 24; i++) {
                 const mid = (lo + hi) / 2;
                 if (contrastRatio(mixHex(bg, fg, mid), bg) < MARK_CONTRAST) lo = mid; else hi = mid;
@@ -721,11 +774,27 @@
 
         // ---------- ANIMATION STATE ----------
         let currentTheme = THEMES.classic;
+        let bgCache = null;
         let lastArgs = null, renderTicker = null;
         let barShown = 0, lastDrawAt = 0, stepStart = 0, optsShownAt = 0;
 
-        // Make sure both font weights are fully loaded BEFORE anything is drawn or recorded,
-        // otherwise bold text can vanish for a few seconds while the file is still arriving.
+        // Pre-render the static background once so software 2D frames stay fast
+        function buildBgCache(W, H, T) {
+            bgCache = document.createElement('canvas');
+            bgCache.width = W;
+            bgCache.height = H;
+            const bctx = bgCache.getContext('2d', { alpha: false });
+            if (T.bg.type === 'solid') {
+                bctx.fillStyle = T.bg.c;
+            } else {
+                const g = bctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, Math.hypot(W, H) / 2);
+                T.bg.stops.forEach(([o, c]) => g.addColorStop(o, c));
+                bctx.fillStyle = g;
+            }
+            bctx.fillRect(0, 0, W, H);
+        }
+
+        // Make sure both font weights are fully loaded BEFORE anything is drawn or recorded
         function preloadFonts() {
             if (!document.fonts || !document.fonts.load) return Promise.resolve();
             const sample = 'QUESTION 1 / 3 ABCD 0123456789 ? ഒരു ജാതി';
@@ -733,7 +802,6 @@
                 document.fonts.load("bold 30px 'Noto Sans Malayalam'", sample),
                 document.fonts.load("400 30px 'Noto Sans Malayalam'", sample)
             ]).then(() => document.fonts.ready).then(() => new Promise(r => requestAnimationFrame(r))).then(() => {
-                // Warm-up: shape the sample once per size/weight on the actual canvas context
                 ctx.save();
                 [['bold', 30], ['bold', 36], ['bold', 68], ['bold', 70], ['bold', 48], ['bold', 52], ['400', 48], ['400', 52]].forEach(([w, sz]) => {
                     ctx.font = `${w} ${sz}px 'Noto Sans Malayalam', sans-serif`;
@@ -745,8 +813,10 @@
 
         function startTicker() {
             stopTicker();
-            // Always redraw (~30fps) so bars, ring and falling marks move smoothly between quiz steps
-            renderTicker = setInterval(() => { if (lastArgs) draw(...lastArgs); }, 33);
+            // Redraw (~30fps) so bars, ring and falling marks move smoothly without double-drawing right after render()
+            renderTicker = setInterval(() => {
+                if (lastArgs && (performance.now() - lastDrawAt) >= 28) draw(...lastArgs);
+            }, 33);
         }
         function stopTicker() { if (renderTicker) { clearInterval(renderTicker); renderTicker = null; } }
 
@@ -771,7 +841,7 @@
             ctx.textAlign = "center";
             ctx.textBaseline = "middle";
             for (let i = 0; i < cols; i++) {
-                const speed = H * 0.12 * (0.85 + 0.30 * pseudo(i + 1)); // ±15% around base
+                const speed = H * 0.12 * (0.85 + 0.30 * pseudo(i + 1));
                 const phase = pseudo(i + 50) * gapY;
                 const off = (t * speed + phase) % gapY;
                 const x = gapX * (i + 0.5);
@@ -851,14 +921,17 @@
             lastDrawAt = now;
 
             // Background
-            if (T.bg.type === 'solid') {
+            if (bgCache && bgCache.width === W && bgCache.height === H) {
+                ctx.drawImage(bgCache, 0, 0);
+            } else if (T.bg.type === 'solid') {
                 ctx.fillStyle = T.bg.c;
+                ctx.fillRect(0, 0, W, H);
             } else {
                 const g = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, Math.hypot(W, H) / 2);
                 T.bg.stops.forEach(([o, c]) => g.addColorStop(o, c));
                 ctx.fillStyle = g;
+                ctx.fillRect(0, 0, W, H);
             }
-            ctx.fillRect(0, 0, W, H);
             if (T.marks) drawFallingMarks(W, H, isVideo, T.markColor, textHoles(q, num, W, H, isVideo));
 
             // Quiz progress bar (top edge) - glides to its target instead of jumping
