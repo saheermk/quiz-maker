@@ -12,7 +12,7 @@
             font-family: 'Noto Sans Malayalam';
             font-style: normal;
             font-weight: 400;
-            font-display: swap;
+            font-display: block;
             src: url('fonts/NotoSansMalayalam-Regular.ttf') format('truetype');
         }
 
@@ -20,7 +20,7 @@
             font-family: 'Noto Sans Malayalam';
             font-style: normal;
             font-weight: 700;
-            font-display: swap;
+            font-display: block;
             src: url('fonts/NotoSansMalayalam-Bold.ttf') format('truetype');
         }
 
@@ -157,6 +157,24 @@
         correct: 2
     }
 ];</textarea>
+
+        <div class="mt-6">
+            <label class="block text-[10px] font-bold text-slate-400 uppercase mb-2">Theme</label>
+            <div id="theme-swatches" class="flex flex-wrap gap-4"></div>
+            <div id="custom-row" class="mt-3 items-center gap-5 text-xs font-bold text-slate-500" style="display:none">
+                <label class="flex items-center gap-2">Background
+                    <input type="color" id="custom-bg" value="#6d28d9" style="width:38px;height:30px;border:0;padding:0;background:none;cursor:pointer"></label>
+                <label class="flex items-center gap-2">Text
+                    <input type="color" id="custom-text" value="#ffffff" style="width:38px;height:30px;border:0;padding:0;background:none;cursor:pointer"></label>
+            </div>
+            <label class="mt-3 flex items-center gap-2 text-sm font-semibold text-slate-700 cursor-pointer">
+                <input type="checkbox" id="marks-toggle" class="w-4 h-4"> Falling ? background
+            </label>
+            <div id="recent-wrap" class="mt-4" style="display:none">
+                <div class="text-[10px] font-bold text-slate-400 uppercase mb-2">Recent</div>
+                <div id="recent-chips" class="flex flex-wrap gap-2"></div>
+            </div>
+        </div>
 
         <div class="mt-6 flex flex-col sm:flex-row gap-4">
             <div class="flex-1">
@@ -295,7 +313,7 @@
         let recordedChunks = [];
         let cancelled = false;
         const canvas = document.getElementById('offscreenCanvas');
-        const ctx = canvas.getContext('2d', { alpha: false });
+        const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
 
         // Keep Screen Active — re-acquire on visibility change (browser releases it when tab is hidden)
         async function lockScreen() {
@@ -456,6 +474,13 @@
                 previewWrapper.style.maxWidth = '90vw';
             }
 
+            await preloadFonts();
+            prefs.format = document.getElementById('video-format').value;
+            pushRecent(); savePrefs();
+            currentTheme = buildTheme(prefs);
+            lastArgs = null; barShown = 0; lastDrawAt = performance.now(); optsShownAt = 0;
+            startTicker();
+
             await lockScreen();
             await initAudioEngine();
 
@@ -519,68 +544,431 @@
             if (!cancelled) mediaRecorder.stop();
         }
 
-        function render(q, opts, ansIdx, timer, num) {
-            const isVideo = canvas.width > canvas.height;
+        // ---------- THEMES ----------
+        const THEMES = {
+            classic: {
+                bg: { type: 'solid', c: '#ffffff' },
+                text: '#111111',
+                optFill: '#f1f5f9', optStroke: '#e2e8f0',
+                badge: '#2563eb', badgeText: '#ffffff',
+                pillFill: '#eef2ff', pillStroke: '#c7d2fe', pillText: '#3730a3',
+                bar: '#2563eb', barTrack: 'rgba(0,0,0,0.06)',
+                ringTrack: 'rgba(0,0,0,0.10)', ring: ['#16a34a', '#d97706', '#dc2626'], ringText: '#111111',
+                markColor: 'rgba(37,99,235,0.20)'
+            },
+            yellow: {
+                bg: { type: 'radial', stops: [[0, '#fff4b0'], [0.5, '#fde047'], [1, '#facc15']] },
+                text: '#111111',
+                optFill: 'rgba(255,255,255,0.45)', optStroke: 'rgba(0,0,0,0.14)',
+                badge: '#111111', badgeText: '#fde047',
+                pillFill: 'rgba(0,0,0,0.07)', pillStroke: 'rgba(0,0,0,0.25)', pillText: '#111111',
+                bar: '#111111', barTrack: 'rgba(0,0,0,0.10)',
+                ringTrack: 'rgba(0,0,0,0.12)', ring: ['#15803d', '#c2410c', '#b91c1c'], ringText: '#111111',
+                markColor: 'rgba(120,80,0,0.24)'
+            },
+            azure: {
+                bg: { type: 'radial', stops: [[0, '#4aa8ff'], [0.5, '#1a8cff'], [1, '#0a6fe0']] },
+                text: '#ffffff',
+                optFill: 'rgba(255,255,255,0.15)', optStroke: 'rgba(255,255,255,0.40)',
+                badge: '#ffffff', badgeText: '#0a6fe0',
+                pillFill: 'rgba(255,255,255,0.18)', pillStroke: 'rgba(255,255,255,0.5)', pillText: '#ffffff',
+                bar: '#ffffff', barTrack: 'rgba(255,255,255,0.22)',
+                ringTrack: 'rgba(255,255,255,0.25)', ring: ['#ffffff', '#fde047', '#fb7185'], ringText: '#ffffff',
+                markColor: 'rgba(255,255,255,0.17)'
+            }
+        };
+        const PREVIEWS = {
+            classic: { bg: '#ffffff', fg: '#111111' },
+            yellow: { bg: 'radial-gradient(circle, #fff4b0, #fde047 55%, #facc15)', fg: '#111111' },
+            azure: { bg: 'radial-gradient(circle, #4aa8ff, #1a8cff 55%, #0a6fe0)', fg: '#ffffff' }
+        };
+        const THEME_LABELS = { classic: 'White', yellow: 'Yellow', azure: 'Blue', custom: 'Custom' };
 
-            // White Background
-            ctx.fillStyle = "white";
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
+        // ---------- COLOR HELPERS ----------
+        function hexRgb(h) {
+            h = h.replace('#', '');
+            if (h.length === 3) h = h.split('').map(c => c + c).join('');
+            const n = parseInt(h, 16);
+            return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+        }
+        function rgba(h, a) { const [r, g, b] = hexRgb(h); return `rgba(${r},${g},${b},${a})`; }
+        function mixHex(a, b, t) {
+            const A = hexRgb(a), B = hexRgb(b);
+            return '#' + A.map((v, i) => Math.round(v + (B[i] - v) * t).toString(16).padStart(2, '0')).join('');
+        }
+        // Custom theme: only 2 colors from the user, everything else is derived
+        function customTheme(bg, tx) {
+            return {
+                bg: { type: 'radial', stops: [[0, mixHex(bg, '#ffffff', 0.25)], [0.5, bg], [1, mixHex(bg, '#000000', 0.14)]] },
+                text: tx,
+                optFill: rgba(tx, 0.12), optStroke: rgba(tx, 0.32),
+                badge: tx, badgeText: bg,
+                pillFill: rgba(tx, 0.10), pillStroke: rgba(tx, 0.35), pillText: tx,
+                bar: tx, barTrack: rgba(tx, 0.16),
+                ringTrack: rgba(tx, 0.18), ring: [tx, tx, tx], ringText: tx,
+                markColor: rgba(tx, 0.22)
+            };
+        }
 
-            // Progress Text
-            ctx.fillStyle = "#94a3b8";
-            ctx.font = isVideo ? "bold 32px 'Noto Sans Malayalam'" : "bold 40px 'Noto Sans Malayalam'";
+        // ---------- SAVED PREFERENCES ----------
+        const PREF_KEY = 'quizMakerPrefs.v1';
+        let prefs = { theme: 'classic', marks: false, customBg: '#6d28d9', customText: '#ffffff', format: 'reel', recent: [] };
+
+        function loadPrefs() {
+            try {
+                const s = JSON.parse(localStorage.getItem(PREF_KEY));
+                if (s && typeof s === 'object') prefs = Object.assign(prefs, s);
+            } catch (e) { }
+        }
+        function savePrefs() { try { localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); } catch (e) { } }
+
+        function themeEntry() {
+            const e = { theme: prefs.theme, marks: !!prefs.marks };
+            if (prefs.theme === 'custom') { e.customBg = prefs.customBg; e.customText = prefs.customText; }
+            return e;
+        }
+        function entryKey(e) { return [e.theme, e.marks ? 1 : 0, e.customBg || '', e.customText || ''].join('|'); }
+        function pushRecent() {
+            const e = themeEntry(), k = entryKey(e);
+            prefs.recent = [e].concat((prefs.recent || []).filter(r => entryKey(r) !== k)).slice(0, 5);
+        }
+        // ---------- AUTO CONTRAST FOR THE FALLING "?" ----------
+        // Marks are decorative, so they are kept far below text contrast (4.5:1). Their opacity is
+        // solved automatically per background so every theme gets the same gentle, visible contrast.
+        const MARK_CONTRAST = 1.25;   // same visibility as the Blue theme, where marks read clearly
+        function relLum(hex) {
+            const f = c => { c /= 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+            const [r, g, b] = hexRgb(hex);
+            return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+        }
+        function contrastRatio(a, b) {
+            const A = relLum(a), B = relLum(b);
+            return (Math.max(A, B) + 0.05) / (Math.min(A, B) + 0.05);
+        }
+        function autoMarkAlpha(bg, fg) {
+            let lo = 0.03, hi = 0.5;
+            if (contrastRatio(mixHex(bg, fg, hi), bg) < MARK_CONTRAST) return hi;   // low-contrast pair: use max
+            for (let i = 0; i < 24; i++) {
+                const mid = (lo + hi) / 2;
+                if (contrastRatio(mixHex(bg, fg, mid), bg) < MARK_CONTRAST) lo = mid; else hi = mid;
+            }
+            return hi;
+        }
+        function baseColorOf(T) { return T.bg.type === 'solid' ? T.bg.c : T.bg.stops[1][1]; }
+        function buildTheme(p) {
+            const base = p.theme === 'custom' ? customTheme(p.customBg, p.customText) : (THEMES[p.theme] || THEMES.classic);
+            const markColor = rgba(base.text, autoMarkAlpha(baseColorOf(base), base.text));
+            return Object.assign({}, base, { marks: !!p.marks, markColor });
+        }
+
+        // ---------- THEME UI ----------
+        function previewOf(e) {
+            if (e.theme === 'custom') {
+                const c = e.customBg || prefs.customBg;
+                return { bg: `radial-gradient(circle, ${mixHex(c, '#ffffff', 0.25)}, ${c} 55%, ${mixHex(c, '#000000', 0.14)})`, fg: e.customText || prefs.customText };
+            }
+            return PREVIEWS[e.theme] || PREVIEWS.classic;
+        }
+        function applyEntry(e) {
+            prefs.theme = e.theme; prefs.marks = !!e.marks;
+            if (e.theme === 'custom') { prefs.customBg = e.customBg; prefs.customText = e.customText; }
+            savePrefs(); renderThemeUI();
+        }
+        function renderThemeUI() {
+            const box = document.getElementById('theme-swatches');
+            box.innerHTML = '';
+            ['classic', 'yellow', 'azure', 'custom'].forEach(key => {
+                const p = previewOf({ theme: key });
+                const sel = prefs.theme === key;
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:4px;background:none;border:0;cursor:pointer;';
+                b.innerHTML = `<div style="width:46px;height:46px;border-radius:50%;background:${p.bg};color:${p.fg};border:1px solid #cbd5e1;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:15px;box-shadow:${sel ? '0 0 0 3px #2563eb' : 'none'};">Aa</div>` +
+                    `<span style="font-size:10px;font-weight:700;color:${sel ? '#2563eb' : '#64748b'};">${THEME_LABELS[key]}</span>`;
+                b.onclick = () => { prefs.theme = key; savePrefs(); renderThemeUI(); };
+                box.appendChild(b);
+            });
+            document.getElementById('custom-row').style.display = prefs.theme === 'custom' ? 'flex' : 'none';
+            document.getElementById('custom-bg').value = prefs.customBg;
+            document.getElementById('custom-text').value = prefs.customText;
+            document.getElementById('marks-toggle').checked = !!prefs.marks;
+
+            // Recent (everything used before, except what's selected now)
+            const cur = entryKey(themeEntry());
+            const list = (prefs.recent || []).filter(r => entryKey(r) !== cur);
+            const wrap = document.getElementById('recent-wrap'), chips = document.getElementById('recent-chips');
+            chips.innerHTML = '';
+            wrap.style.display = list.length ? 'block' : 'none';
+            list.forEach(e => {
+                const p = previewOf(e);
+                const c = document.createElement('button');
+                c.type = 'button';
+                c.title = THEME_LABELS[e.theme] + (e.marks ? ' + ?' : '');
+                c.style.cssText = `background:${p.bg};color:${p.fg};border:1px solid #cbd5e1;border-radius:999px;padding:6px 14px;font-weight:800;font-size:13px;cursor:pointer;`;
+                c.textContent = e.marks ? 'Aa ?' : 'Aa';
+                c.onclick = () => applyEntry(e);
+                chips.appendChild(c);
+            });
+        }
+        function initThemeUI() {
+            document.getElementById('custom-bg').oninput = e => { prefs.customBg = e.target.value; savePrefs(); renderThemeUI(); };
+            document.getElementById('custom-text').oninput = e => { prefs.customText = e.target.value; savePrefs(); renderThemeUI(); };
+            document.getElementById('marks-toggle').onchange = e => { prefs.marks = e.target.checked; savePrefs(); renderThemeUI(); };
+            document.getElementById('video-format').value = prefs.format;
+            document.getElementById('video-format').onchange = e => { prefs.format = e.target.value; savePrefs(); };
+            renderThemeUI();
+        }
+
+        // ---------- ANIMATION STATE ----------
+        let currentTheme = THEMES.classic;
+        let lastArgs = null, renderTicker = null;
+        let barShown = 0, lastDrawAt = 0, stepStart = 0, optsShownAt = 0;
+
+        // Make sure both font weights are fully loaded BEFORE anything is drawn or recorded,
+        // otherwise bold text can vanish for a few seconds while the file is still arriving.
+        function preloadFonts() {
+            if (!document.fonts || !document.fonts.load) return Promise.resolve();
+            const sample = 'QUESTION 1 / 3 ABCD 0123456789 ? ഒരു ജാതി';
+            return Promise.all([
+                document.fonts.load("bold 30px 'Noto Sans Malayalam'", sample),
+                document.fonts.load("400 30px 'Noto Sans Malayalam'", sample)
+            ]).then(() => document.fonts.ready).then(() => new Promise(r => requestAnimationFrame(r))).then(() => {
+                // Warm-up: shape the sample once per size/weight on the actual canvas context
+                ctx.save();
+                [['bold', 30], ['bold', 36], ['bold', 68], ['bold', 70], ['bold', 48], ['bold', 52], ['400', 48], ['400', 52]].forEach(([w, sz]) => {
+                    ctx.font = `${w} ${sz}px 'Noto Sans Malayalam', sans-serif`;
+                    ctx.fillText(sample, -9999, -9999);
+                });
+                ctx.restore();
+            }).catch(() => { });
+        }
+
+        function startTicker() {
+            stopTicker();
+            // Always redraw (~30fps) so bars, ring and falling marks move smoothly between quiz steps
+            renderTicker = setInterval(() => { if (lastArgs) draw(...lastArgs); }, 33);
+        }
+        function stopTicker() { if (renderTicker) { clearInterval(renderTicker); renderTicker = null; } }
+
+        const easeOut = t => { t = Math.max(0, Math.min(1, t)); return 1 - Math.pow(1 - t, 3); };
+        function pseudo(n) { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); }
+
+        // Falling "?" columns: evenly spaced across width, each column slightly different speed
+        function drawFallingMarks(W, H, isVideo, color, holes) {
+            const cols = isVideo ? 16 : 9;
+            const gapX = W / cols;
+            const gapY = H * 0.26;
+            const size = Math.min(gapX * 0.6, 80);
+            const t = performance.now() / 1000;
+            ctx.save();
+            // Clip out the areas that hold text so marks never pass behind the letters
+            ctx.beginPath();
+            ctx.rect(0, 0, W, H);
+            (holes || []).forEach(h => ctx.rect(h.x, h.y, h.w, h.h));
+            ctx.clip('evenodd');
+            ctx.fillStyle = color;
+            ctx.font = `bold ${size}px 'Noto Sans Malayalam', Arial`;
             ctx.textAlign = "center";
-            ctx.fillText(`QUESTION ${num} / ${quizData.length}`, canvas.width / 2, isVideo ? 100 : 140);
-
-            // Question Text (Centered Wrap)
-            ctx.fillStyle = "#0f172a";
-            ctx.font = isVideo ? "bold 64px 'Noto Sans Malayalam'" : "bold 68px 'Noto Sans Malayalam'";
             ctx.textBaseline = "middle";
-            drawWrappedText(q, canvas.width / 2, isVideo ? 280 : 450, isVideo ? 1500 : 920, isVideo ? 90 : 100);
+            for (let i = 0; i < cols; i++) {
+                const speed = H * 0.12 * (0.85 + 0.30 * pseudo(i + 1)); // ±15% around base
+                const phase = pseudo(i + 50) * gapY;
+                const off = (t * speed + phase) % gapY;
+                const x = gapX * (i + 0.5);
+                for (let y = off - gapY; y < H + gapY; y += gapY) ctx.fillText("?", x, y);
+            }
+            ctx.restore();
+        }
 
-            // Option Boxes
+        function fitFont(text, maxW, size, weight) {
+            let s = size;
+            ctx.font = `${weight} ${s}px 'Noto Sans Malayalam'`;
+            while (ctx.measureText(text).width > maxW && s > 24) {
+                s -= 2;
+                ctx.font = `${weight} ${s}px 'Noto Sans Malayalam'`;
+            }
+        }
+
+        function optionRect(idx, isVideo) {
+            if (isVideo) return { x: idx % 2 === 1 ? 980 : 140, y: idx >= 2 ? 740 : 540, w: 800, h: 150 };
+            return { x: 90, y: 900 + idx * 185, w: 900, h: 165 };
+        }
+        function wrapLines(text, maxW) {
+            const words = text.split(' ');
+            const lines = [];
+            let line = '';
+            for (let n = 0; n < words.length; n++) {
+                const test = line + words[n] + ' ';
+                if (ctx.measureText(test).width > maxW && n > 0) { lines.push(line); line = words[n] + ' '; }
+                else line = test;
+            }
+            lines.push(line);
+            return lines;
+        }
+        function textHoles(q, num, W, H, isVideo) {
+            const holes = [];
+            // "Question x / y" pill
+            ctx.font = `bold ${isVideo ? 30 : 36}px 'Noto Sans Malayalam'`;
+            const pw = ctx.measureText(`QUESTION ${num} / ${quizData.length}`).width + 70, ph = isVideo ? 64 : 76;
+            holes.push({ x: (isVideo ? 100 : (W - pw) / 2) - 20, y: (isVideo ? 70 : 110) - 20, w: pw + 40, h: ph + 40 });
+            // Question text block
+            const qY = isVideo ? 300 : 440, lineH = isVideo ? 96 : 104, maxW = isVideo ? 1500 : 900;
+            ctx.font = `bold ${isVideo ? 68 : 70}px 'Noto Sans Malayalam'`;
+            const lines = wrapLines(q, maxW);
+            const qw = Math.max(0, ...lines.map(l => ctx.measureText(l.trim()).width));
+            holes.push({ x: W / 2 - qw / 2 - 40, y: qY - lineH / 2 - 12, w: qw + 80, h: lines.length * lineH + 24 });
+            // Option slots (always reserved, so marks don't pop in/out)
+            for (let i = 0; i < 4; i++) { const o = optionRect(i, isVideo); holes.push({ x: o.x - 16, y: o.y - 16, w: o.w + 32, h: o.h + 32 }); }
+            // Countdown ring
+            const cx = isVideo ? W - 160 : W / 2, cy = isVideo ? 105 : H - 150;
+            holes.push({ x: cx - 110, y: cy - 110, w: 220, h: 220 });
+            return holes;
+        }
+
+        function render(q, opts, ansIdx, timer, num) {
+            const now = performance.now();
+            const prevOpts = lastArgs ? lastArgs[1].length : 0;
+            if (opts.length > 0 && prevOpts === 0) optsShownAt = now;
+            stepStart = now;
+            lastArgs = [q, opts, ansIdx, timer, num];
+            draw(q, opts, ansIdx, timer, num);
+        }
+
+        function draw(q, opts, ansIdx, timer, num) {
+            ctx.save();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.globalAlpha = 1; ctx.shadowBlur = 0; ctx.shadowColor = 'rgba(0,0,0,0)';
+            try { drawFrame(q, opts, ansIdx, timer, num); } finally { ctx.restore(); }
+        }
+
+        function drawFrame(q, opts, ansIdx, timer, num) {
+            const T = currentTheme;
+            const isVideo = canvas.width > canvas.height;
+            const W = canvas.width, H = canvas.height;
+            const revealed = ansIdx >= 0;
+            const now = performance.now();
+            const dt = Math.min(0.1, Math.max(0, (now - lastDrawAt) / 1000));
+            lastDrawAt = now;
+
+            // Background
+            if (T.bg.type === 'solid') {
+                ctx.fillStyle = T.bg.c;
+            } else {
+                const g = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, Math.hypot(W, H) / 2);
+                T.bg.stops.forEach(([o, c]) => g.addColorStop(o, c));
+                ctx.fillStyle = g;
+            }
+            ctx.fillRect(0, 0, W, H);
+            if (T.marks) drawFallingMarks(W, H, isVideo, T.markColor, textHoles(q, num, W, H, isVideo));
+
+            // Quiz progress bar (top edge) - glides to its target instead of jumping
+            const target = num / quizData.length;
+            barShown += (target - barShown) * (1 - Math.exp(-dt * 4));
+            if (Math.abs(target - barShown) < 0.0005) barShown = target;
+            ctx.fillStyle = T.barTrack;
+            ctx.fillRect(0, 0, W, 12);
+            ctx.fillStyle = T.bar;
+            ctx.fillRect(0, 0, W * barShown, 12);
+
+            // "Question x / y" pill
+            const label = `QUESTION ${num} / ${quizData.length}`;
+            ctx.textBaseline = "middle";
+            ctx.font = `bold ${isVideo ? 30 : 36}px 'Noto Sans Malayalam'`;
+            const pw = ctx.measureText(label).width + 70, ph = isVideo ? 64 : 76;
+            const px = isVideo ? 100 : (W - pw) / 2, py = isVideo ? 70 : 110;
+            ctx.fillStyle = T.pillFill;
+            ctx.strokeStyle = T.pillStroke;
+            ctx.lineWidth = 3;
+            roundRect(px, py, pw, ph, ph / 2, true, true);
+            ctx.fillStyle = T.pillText;
+            ctx.textAlign = "center";
+            ctx.fillText(label, px + pw / 2, py + ph / 2 + 2);
+
+            // Question
+            ctx.fillStyle = T.text;
+            ctx.font = `bold ${isVideo ? 68 : 70}px 'Noto Sans Malayalam'`;
+            ctx.textAlign = "center";
+            drawWrappedText(q, W / 2, isVideo ? 300 : 440, isVideo ? 1500 : 900, isVideo ? 96 : 104);
+
+            // Options (fade/slide in one by one, smooth reveal of the answer)
+            const revealE = revealed ? easeOut((now - stepStart) / 350) : 0;
             opts.forEach((text, idx) => {
-                let yBox, xBox, w, h, textX, textY, fontSize;
+                const { x, y, w, h } = optionRect(idx, isVideo);
+                const isActive = idx === ansIdx;
+                const r = h / 2;
+                const optIn = easeOut((now - optsShownAt - idx * 90) / 350);
 
-                if (isVideo) {
-                    w = 700; h = 140;
-                    const isCol2 = idx % 2 === 1;
-                    const isRow2 = idx >= 2;
-                    xBox = isCol2 ? 1010 : 210;
-                    yBox = isRow2 ? 700 : 500;
-                    textX = xBox + w / 2;
-                    textY = yBox + h / 2;
-                    fontSize = "44px";
+                ctx.save();
+                ctx.globalAlpha = optIn * (revealed && !isActive ? 1 - 0.7 * revealE : 1);
+                ctx.translate(0, (1 - optIn) * 24);
+                if (isActive) {
+                    const s = 1 + 0.04 * revealE;
+                    ctx.translate(x + w / 2, y + h / 2);
+                    ctx.scale(s, s);
+                    ctx.translate(-(x + w / 2), -(y + h / 2));
+                }
+                ctx.lineWidth = 3;
+                ctx.strokeStyle = T.optStroke;
+                ctx.fillStyle = T.optFill;
+                roundRect(x, y, w, h, r, true, true);
+                if (isActive && revealE > 0) {
+                    ctx.save();
+                    ctx.globalAlpha *= revealE;
+                    ctx.shadowColor = "rgba(16,185,129,0.6)";
+                    ctx.shadowBlur = 40;
+                    ctx.strokeStyle = "#34d399";
+                    ctx.fillStyle = "#10b981";
+                    roundRect(x, y, w, h, r, true, true);
+                    ctx.restore();
+                }
+                const showTick = isActive && revealE > 0.4;
+
+                // Letter badge (or tick when correct)
+                const bx = x + r, by = y + h / 2, br = h * 0.30;
+                ctx.fillStyle = showTick ? "#ffffff" : T.badge;
+                ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2); ctx.fill();
+                if (showTick) {
+                    ctx.strokeStyle = "#059669"; ctx.lineWidth = 9; ctx.lineCap = "round"; ctx.lineJoin = "round";
+                    ctx.beginPath();
+                    ctx.moveTo(bx - br * 0.42, by + br * 0.02);
+                    ctx.lineTo(bx - br * 0.1, by + br * 0.35);
+                    ctx.lineTo(bx + br * 0.45, by - br * 0.32);
+                    ctx.stroke();
                 } else {
-                    w = 880; h = 170; xBox = 100;
-                    yBox = 1000 + (idx * 190) - 85;
-                    textX = canvas.width / 2;
-                    textY = yBox + h / 2;
-                    fontSize = "52px";
+                    ctx.fillStyle = T.badgeText;
+                    ctx.font = `bold ${Math.round(br * 1.05)}px 'Noto Sans Malayalam'`;
+                    ctx.textAlign = "center";
+                    ctx.fillText("ABCD"[idx], bx, by + 2);
                 }
 
-                const isActive = idx === ansIdx;
-
-                ctx.lineWidth = 6;
-                ctx.strokeStyle = isActive ? "#10b981" : "#f1f5f9";
-                ctx.fillStyle = isActive ? "#10b981" : "#f8fafc";
-
-                roundRect(xBox, yBox, w, h, isVideo ? 20 : 30, true, true);
-
-                ctx.fillStyle = isActive ? "white" : "#334155";
-                ctx.font = `${fontSize} 'Noto Sans Malayalam'`;
-                ctx.fillText(text, textX, textY);
+                // Option text (auto-shrinks to fit)
+                const tx = bx + br + 30, tw = x + w - r * 0.7 - tx;
+                ctx.fillStyle = showTick ? "#ffffff" : T.text;
+                fitFont(text, tw, isVideo ? 48 : 52, showTick ? "bold" : "normal");
+                ctx.textAlign = "left";
+                ctx.fillText(text, tx, y + h / 2 + 3);
+                ctx.restore();
             });
 
-            // Countdown Timer
+            // Countdown ring - drains continuously through each second
             if (timer !== null) {
-                ctx.fillStyle = "#ef4444";
-                ctx.font = isVideo ? "bold 150px Arial" : "bold 350px Arial";
-                if (isVideo) {
-                    ctx.fillText(timer, 1750, 150);
-                } else {
-                    ctx.fillText(timer, canvas.width / 2, 1800);
+                const R = 80;
+                const cx = isVideo ? W - 160 : W / 2;
+                const cy = isVideo ? 105 : H - 150;
+                const frac = Math.max(0, (timer - Math.min(1, (now - stepStart) / 1000)) / 3);
+                ctx.lineWidth = 14; ctx.lineCap = "round";
+                ctx.strokeStyle = T.ringTrack;
+                ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
+                if (frac > 0.002) {
+                    ctx.strokeStyle = T.ring[3 - timer];
+                    ctx.beginPath();
+                    ctx.arc(cx, cy, R, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * frac);
+                    ctx.stroke();
                 }
+                ctx.fillStyle = T.ringText;
+                ctx.font = `bold ${R}px 'Noto Sans Malayalam', Arial`;
+                ctx.textAlign = "center";
+                ctx.fillText(String(timer), cx, cy + 6);
             }
         }
 
@@ -609,7 +997,12 @@
 
         function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+        loadPrefs();
+        initThemeUI();
+        preloadFonts();
+
         function finalizeExport() {
+            stopTicker();
             const mime = mediaRecorder.mimeType;
             const blob = new Blob(recordedChunks, { type: mime });
             const url = URL.createObjectURL(blob);
